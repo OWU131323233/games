@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>ゆらゆらスイートゲーム（改良版）</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.1.9/p5.min.js"></script>
+  <script src="https://cdn.socket.io/4.5.1/socket.io.min.js"></script>
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      font-family: "Hiragino Maru Gothic ProN", "Yu Gothic", sans-serif;
+      background: linear-gradient(180deg, #fbe9e7, #f8bbd0);
+    }
+    #ui {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      color: #6a1b9a;
+      font-size: 20px;
+      font-weight: bold;
+    }
+    button {
+      position: absolute;
+      left: 10px;
+      z-index: 10;
+      background: #f48fb1;
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 20px;
+      cursor: pointer;
+      font-size: 16px;
+      transition: 0.2s;
+    }
+    button:hover { background: #ec407a; }
+    #connect { top: 60px; }
+    #start { top: 110px; display: none; }
+  </style>
+</head>
+<body>
+  <div id="ui">スコア: 0　｜　残り: 60 秒</div>
+  <button id="connect">ルームに入る</button>
+  <button id="start">スタート</button>
+
+  <script>
+    const socket = io();
+
+    // --- センサーデータ ---
+    let beta = 0;   // 上下傾き
+    let gamma = 0;  // 左右傾き
+
+    // --- プレイヤー ---
+    let player = {x: 50, y: 50, r: 25};
+
+    // --- ゲーム設定 ---
+    let obstacles = [
+      {x:200, y:150, w:100, h:20},
+      {x:400, y:300, w:150, h:20},
+      {x:600, y:450, w:100, h:20}
+    ];
+
+    let goal = {x:750, y:550, r:30};
+    let hearts = [];
+    let score = 0;
+    const speed = 0.25;
+    let timeLeft = 60;
+    let gameActive = false;
+    let timer = null;
+
+    // --- ルーム参加 ---
+    document.querySelector("#connect").addEventListener("click", () => {
+      socket.emit("join", "game");
+      document.querySelector("#connect").remove();
+      document.querySelector("#start").style.display = "block";
+    });
+
+    // --- スタート ---
+    document.querySelector("#start").addEventListener("click", () => {
+      if (gameActive) return;
+      gameActive = true;
+      score = 0;
+      timeLeft = 60;
+      player.x = 50;
+      player.y = 50;
+      spawnHearts();
+      updateUI();
+      document.querySelector("#start").style.display = "none";
+      startTimer();
+    });
+
+    // --- センサーデータ受信 ---
+    socket.on("sensor", (data) => {
+      beta = parseFloat(data.b) || 0;
+      gamma = parseFloat(data.g) || 0;
+    });
+
+    function setup() {
+      createCanvas(800, 600);
+    }
+
+    function draw() {
+      background(255, 240, 245);
+
+      if (!gameActive) {
+        fill(150, 100);
+        textAlign(CENTER, CENTER);
+        textSize(24);
+        text("「スタート」を押してね 💕", width/2, height/2);
+        return;
+      }
+
+      // --- プレイヤー移動 ---
+      player.x += gamma * speed;
+      player.y += beta * speed;
+
+      // 画面端制限
+      player.x = constrain(player.x, player.r, width - player.r);
+      player.y = constrain(player.y, player.r, height - player.r);
+
+      // --- 障害物 ---
+      fill(255, 255, 255, 180);
+      noStroke();
+      obstacles.forEach(obs => {
+        rect(obs.x, obs.y, obs.w, obs.h, 10);
+
+        // 衝突判定と滑るような処理
+        if (player.x + player.r > obs.x && player.x - player.r < obs.x + obs.w &&
+            player.y + player.r > obs.y && player.y - player.r < obs.y + obs.h) {
+
+          // X方向補正
+          if (player.x < obs.x) player.x = obs.x - player.r;
+          else if (player.x > obs.x + obs.w) player.x = obs.x + obs.w + player.r;
+
+          // Y方向補正
+          if (player.y < obs.y) player.y = obs.y - player.r;
+          else if (player.y > obs.y + obs.h) player.y = obs.y + obs.h + player.r;
+        }
+      });
+
+      // --- ゴール ---
+      let gradient = drawingContext.createRadialGradient(goal.x, goal.y, 10, goal.x, goal.y, goal.r);
+      gradient.addColorStop(0, "#fff8e1");
+      gradient.addColorStop(1, "#ffd54f");
+      drawingContext.fillStyle = gradient;
+      ellipse(goal.x, goal.y, goal.r*2);
+
+      let d = dist(player.x, player.y, goal.x, goal.y);
+      if (d < player.r + goal.r) {
+        score += 1;
+        player.x = 50;
+        player.y = 50;
+        spawnHearts();
+        updateUI();
+      }
+
+      // --- ハート ---
+      for (let i = hearts.length - 1; i >= 0; i--) {
+        let h = hearts[i];
+        fill(255, 105, 180);
+        heartShape(h.x, h.y, 15);
+        let distH = dist(player.x, player.y, h.x, h.y);
+        if (distH < player.r + 10) {
+          hearts.splice(i, 1);
+          score += 3;
+          updateUI();
+        }
+      }
+
+      // --- プレイヤー ---
+      fill(255, 182, 193);
+      noStroke();
+      ellipse(player.x, player.y, player.r*2);
+    }
+
+    // --- タイマー ---
+    function startTimer() {
+      clearInterval(timer);
+      timer = setInterval(() => {
+        if (gameActive) {
+          timeLeft--;
+          if (timeLeft <= 0) {
+            gameActive = false;
+            clearInterval(timer);
+            alert("🌸 ゲーム終了！あなたのスコアは " + score + " です！");
+            document.querySelector("#start").style.display = "block";
+          }
+          updateUI();
+        }
+      }, 1000);
+    }
+
+    function spawnHearts() {
+      hearts = [];
+      for (let i = 0; i < 3; i++) {
+        hearts.push({
+          x: random(100, width - 100),
+          y: random(100, height - 100)
+        });
+      }
+    }
+
+    function updateUI() {
+      document.querySelector("#ui").innerText = `スコア: ${score}　｜　残り: ${timeLeft} 秒`;
+    }
+
+    // --- ハート形 ---
+    function heartShape(x, y, size) {
+      beginShape();
+      for (let t = 0; t < TWO_PI; t += 0.1) {
+        let sx = 16 * pow(sin(t), 3);
+        let sy = 13 * cos(t) - 5 * cos(2*t) - 2 * cos(3*t) - cos(4*t);
+        vertex(x + sx * size * 0.05, y - sy * size * 0.05);
+      }
+      endShape(CLOSE);
+    }
+  </script>
+</body>
+</html>
